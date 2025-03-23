@@ -21,7 +21,7 @@ export async function askGemini(
   try {
     // If an image is provided, use multimodal model
     if (image) {
-      const model = genAI.getGenerativeModel({ model: "gemini-pro-vision" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
       // Convert the file to base64
       const base64EncodedImage = await fileToGenerativePart(image);
@@ -33,7 +33,7 @@ export async function askGemini(
     }
     // Text-only query
     else {
-      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const result = await model.generateContent(prompt);
       const response = await result.response;
       return response.text();

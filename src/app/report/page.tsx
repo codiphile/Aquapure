@@ -7,6 +7,7 @@ import { createReport } from "@/utils/db/actions";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import Script from "next/script";
+import { askGemini } from "@/utils/gemini";
 
 // Extend the Window interface to include google
 declare global {
@@ -20,6 +21,7 @@ export default function ReportPage() {
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [mapPosition, setMapPosition] = useState({
     lat: 12.817221,
@@ -27,6 +29,10 @@ export default function ReportPage() {
   });
   const [mapLoaded, setMapLoaded] = useState(false);
   const [mapInitError, setMapInitError] = useState(false);
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState("");
+  const [isExtractionFailed, setIsExtractionFailed] = useState(false);
 
   // Initialize map after Google Maps script is loaded
   const initMap = () => {
@@ -134,6 +140,107 @@ export default function ReportPage() {
     }
   }, [mapPosition.lat, mapPosition.lng]);
 
+  // Extract GPS coordinates from image EXIF data
+  const extractGeotagsFromImage = (
+    file: File
+  ): Promise<{ lat: number; lng: number } | null> => {
+    return new Promise((resolve) => {
+      // Create a temporary image element
+      const img = new Image();
+      img.onload = function () {
+        try {
+          // Use EXIF.js to extract metadata
+          // @ts-ignore - EXIF is loaded from the CDN
+          EXIF.getData(img, function () {
+            // @ts-ignore
+            const exifData = EXIF.getAllTags(this);
+
+            if (exifData && exifData.GPSLatitude && exifData.GPSLongitude) {
+              // Convert GPS coordinates from degrees/minutes/seconds to decimal
+              const latDMS = exifData.GPSLatitude;
+              const latRef = exifData.GPSLatitudeRef || "N";
+              const lngDMS = exifData.GPSLongitude;
+              const lngRef = exifData.GPSLongitudeRef || "E";
+
+              // Calculate decimal coordinates
+              const latitude = latDMS[0] + latDMS[1] / 60 + latDMS[2] / 3600;
+              const longitude = lngDMS[0] + lngDMS[1] / 60 + lngDMS[2] / 3600;
+
+              // Apply negative value for south/west coordinates
+              const lat = latRef === "N" ? latitude : -latitude;
+              const lng = lngRef === "E" ? longitude : -longitude;
+
+              resolve({ lat, lng });
+            } else {
+              resolve(null);
+            }
+          });
+        } catch (error) {
+          console.error("Error extracting geotags:", error);
+          resolve(null);
+        }
+      };
+
+      img.onerror = function () {
+        resolve(null);
+      };
+
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  // Generate description using Gemini AI
+  const generateDescription = async (file: File) => {
+    if (!file) return;
+
+    setIsGeneratingDescription(true);
+    try {
+      const prompt =
+        "Analyze this image of a water-related issue. Provide a detailed description of what you see, focusing on the type of water issue (pollution, leakage, stagnation, etc.), its severity, and any visible environmental impacts. Keep your description factual and under 150 words.";
+
+      const generatedDescription = await askGemini(prompt, file);
+      setDescription(generatedDescription);
+      toast.success("Description generated successfully");
+
+      // After generating description, automatically run the full analysis
+      await analyzeWithGemini(file, generatedDescription);
+    } catch (error) {
+      console.error("Error generating description:", error);
+      toast.error("Failed to generate description");
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  };
+
+  // Analyze with Gemini AI - updated to accept parameters
+  const analyzeWithGemini = async (file = imageFile, desc = description) => {
+    if (!file || !desc) {
+      toast.error("Please provide both an image and description for analysis");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const prompt = `Analyze this water-related issue image. Based on the image and description: "${desc}", provide a comprehensive analysis including:
+      1. Water Issue Type: What specific type of water issue is shown (pollution, leakage, stagnation, etc.)
+      2. Severity: Rate the severity (Low, Medium, High) and explain why
+      3. Environmental Impact: What are the potential environmental consequences
+      4. Recommended Actions: What should be done to address this issue
+      5. Timeline: How urgent is addressing this issue
+      
+      Format your response as a structured report with clear headings for each section. Be factual, precise, and educational.`;
+
+      const analysis = await askGemini(prompt, file);
+      setAiAnalysis(analysis);
+      toast.success("Analysis completed");
+    } catch (error) {
+      console.error("Error analyzing with Gemini:", error);
+      toast.error("Failed to analyze the image");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -158,7 +265,7 @@ export default function ReportPage() {
       });
 
       toast.success("Report submitted successfully");
-      router.push("/dashboard");
+      router.push("/");
     } catch (error) {
       console.error("Error submitting report:", error);
       toast.error("Failed to submit report");
@@ -254,14 +361,44 @@ export default function ReportPage() {
                     type="file"
                     accept="image/*"
                     className="hidden"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (file) {
+                        setImageFile(file);
                         const reader = new FileReader();
                         reader.onloadend = () => {
                           setImageUrl(reader.result as string);
                         };
                         reader.readAsDataURL(file);
+
+                        // Try to extract geotags
+                        const geoData = await extractGeotagsFromImage(file);
+                        if (geoData) {
+                          setMapPosition(geoData);
+                          // Get address from coordinates
+                          if (window.google) {
+                            const geocoder = new window.google.maps.Geocoder();
+                            geocoder.geocode(
+                              { location: geoData },
+                              (results: any, status: string) => {
+                                if (status === "OK" && results && results[0]) {
+                                  setLocation(results[0].formatted_address);
+                                  toast.success(
+                                    "Location extracted from image"
+                                  );
+                                }
+                              }
+                            );
+                          }
+                        } else {
+                          setIsExtractionFailed(true);
+                          toast.warning(
+                            "No location data found in image. Please enter manually."
+                          );
+                        }
+
+                        // Generate description and analysis
+                        generateDescription(file);
                       }
                     }}
                   />
@@ -273,6 +410,26 @@ export default function ReportPage() {
                 )}
               </div>
             </div>
+
+            {imageUrl && !aiAnalysis && description && (
+              <div className="flex items-center justify-center p-4 bg-blue-50 rounded-lg">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600 mr-2"></div>
+                <span className="text-sm text-indigo-600">
+                  Analyzing your water issue...
+                </span>
+              </div>
+            )}
+
+            {aiAnalysis && (
+              <div className="p-4 bg-indigo-50 rounded-lg border border-indigo-100">
+                <h3 className="font-semibold text-indigo-900 mb-2">
+                  AI Analysis Report
+                </h3>
+                <div className="text-sm text-indigo-800 whitespace-pre-line">
+                  {aiAnalysis}
+                </div>
+              </div>
+            )}
 
             <Button type="submit" className="w-full" disabled={isSubmitting}>
               {isSubmitting ? "Submitting..." : "Submit Report"}
