@@ -1,6 +1,6 @@
 # AquaPure
 
-AquaPure is a community-driven water conservation platform that allows users to report water-related issues such as leakages, pollution, and stagnant water. The platform aims to create awareness and facilitate quick resolution of water conservation issues.
+AquaPure is a community-driven water conservation platform that allows the users to report water-related issues such as leakages, pollution, and stagnant water. The platform aims to create awareness and facilitate quick resolution of water conservation issues.
 
 ![AquaPure Screenshot](https://placehold.co/600x400?text=AquaPure+Screenshot&font=montserrat)
 
